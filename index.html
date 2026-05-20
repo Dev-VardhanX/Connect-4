@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect 4 Multiplayer | Neon Battleground</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Animated Ambient Glowing Background -->
+    <div class="bg-glow-container">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+        <div class="glow-orb orb-3"></div>
+        <div class="grid-overlay"></div>
+    </div>
+
+    <!-- Main Application Container -->
+    <main id="app">
+        
+        <!-- ================= LOBBY SCREEN ================= -->
+        <section id="lobby-screen" class="glass-panel active">
+            <header class="lobby-header">
+                <h1 class="logo-text">CONNECT <span class="neon-red">4</span></h1>
+                <p class="subtitle">Realtime Neon Multiplayer Arena</p>
+            </header>
+
+            <div class="lobby-body">
+                <!-- Action Card: Create Room -->
+                <div class="card create-card">
+                    <h3>Host a New Match</h3>
+                    <p>Start a session and invite your friend by sharing a secret room code.</p>
+                    <button id="createRoomBtn" class="btn btn-primary btn-glow">
+                        <span class="btn-content">Create Secret Room</span>
+                    </button>
+                </div>
+
+                <div class="divider">
+                    <span>OR</span>
+                </div>
+
+                <!-- Action Card: Join Room -->
+                <div class="card join-card">
+                    <h3>Join Existing Match</h3>
+                    <p>Enter an invitation code shared by your opponent to connect instantly.</p>
+                    <div class="input-group">
+                        <input 
+                            type="text" 
+                            id="roomInput" 
+                            placeholder="Enter 5-character code" 
+                            maxlength="10"
+                            autocomplete="off"
+                        >
+                        <button id="joinRoomBtn" class="btn btn-secondary">
+                            Join Game
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Global Status Bar -->
+            <footer class="lobby-footer">
+                <div id="connectionStatus" class="connection-badge status-disconnected">
+                    <span class="indicator-dot"></span>
+                    <span class="status-label">Connecting to server...</span>
+                </div>
+            </footer>
+        </section>
+
+        <!-- ================= GAMEPLAY SCREEN ================= -->
+        <section id="game-screen" class="glass-panel">
+            <!-- Game Screen Header -->
+            <header class="game-header">
+                <button id="exitLobbyBtn" class="btn btn-icon btn-danger-outline" title="Leave room">
+                    ← Leave
+                </button>
+                <div class="room-indicator-box">
+                    <span class="room-label">ROOM:</span>
+                    <div class="code-wrapper" id="copyCodeBtn" title="Click to copy Room Code">
+                        <span id="roomCodeDisplay">-----</span>
+                        <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16">
+                            <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                        </svg>
+                    </div>
+                </div>
+                <button id="muteBtn" class="btn btn-icon btn-mute" title="Toggle audio">
+                    <span id="muteIcon">🔊</span>
+                </button>
+            </header>
+
+            <!-- Active Scoreboard & Identity Dash -->
+            <div class="scoreboard">
+                <div class="player-card card-red" id="playerRedCard">
+                    <div class="avatar">R</div>
+                    <div class="player-info">
+                        <span class="player-role">Player 1 (Host)</span>
+                        <span class="player-name" id="playerRedName">Connecting...</span>
+                    </div>
+                    <span class="player-badge">Red</span>
+                </div>
+
+                <div class="versus">VS</div>
+
+                <div class="player-card card-yellow" id="playerYellowCard">
+                    <span class="player-badge">Yellow</span>
+                    <div class="player-info">
+                        <span class="player-role">Player 2 (Guest)</span>
+                        <span class="player-name" id="playerYellowName">Waiting...</span>
+                    </div>
+                    <div class="avatar">Y</div>
+                </div>
+            </div>
+
+            <!-- Central Turn / Game status badge -->
+            <div class="game-status-wrapper">
+                <div id="gameStatusAlert" class="status-badge pulse-red">
+                    Waiting for players to connect...
+                </div>
+            </div>
+
+            <!-- The Connect 4 Grid -->
+            <div class="board-outer-container">
+                <!-- Interactive Drop Guide Indicator -->
+                <div class="column-indicators" id="colIndicators">
+                    <div class="indicator-arrow" data-col="0">▼</div>
+                    <div class="indicator-arrow" data-col="1">▼</div>
+                    <div class="indicator-arrow" data-col="2">▼</div>
+                    <div class="indicator-arrow" data-col="3">▼</div>
+                    <div class="indicator-arrow" data-col="4">▼</div>
+                    <div class="indicator-arrow" data-col="5">▼</div>
+                    <div class="indicator-arrow" data-col="6">▼</div>
+                </div>
+                
+                <div id="board" class="board-grid">
+                    <!-- Javascript will dynamically inject cell elements -->
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ================= GAME OVER / REMATCH MODAL ================= -->
+    <div id="gameOverModal" class="modal-overlay">
+        <div class="modal-content glass-panel">
+            <div class="celebration-rays"></div>
+            <div class="modal-header">
+                <h2 id="modalTitle" class="modal-title">VICTORY</h2>
+            </div>
+            <div class="modal-body">
+                <p id="modalDescription">You aligned four chips in a row!</p>
+                <div class="rematch-status" id="rematchStatusBox">
+                    <!-- Status updates on who requested rematch -->
+                    <div class="player-rematch-indicator red-req" id="redRematchBadge">
+                        <span>Red Player</span>
+                        <span class="status-check">✖</span>
+                    </div>
+                    <div class="player-rematch-indicator yellow-req" id="yellowRematchBadge">
+                        <span>Yellow Player</span>
+                        <span class="status-check">✖</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="rematchBtn" class="btn btn-primary btn-glow">
+                    Request Rematch
+                </button>
+                <button id="modalExitBtn" class="btn btn-secondary">
+                    Back to Lobby
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast">Room code copied!</div>
+
+    <!-- Socket.IO and Main Script client imports -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
