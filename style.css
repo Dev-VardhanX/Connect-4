@@ -273,6 +273,12 @@ input:focus {
     align-items: center;
     justify-content: center;
     gap: 8px;
+    user-select: none;
+}
+
+.btn:active {
+    transform: translateY(1px) scale(0.97) !important;
+    transition: transform 0.05s ease-out;
 }
 
 .btn-primary {
@@ -976,4 +982,69 @@ input:focus {
         padding: 12px 14px;
         font-size: 0.9rem;
     }
+}
+
+/* ================= RECONNECT BANNER ================= */
+.reconnect-banner {
+    position: fixed;
+    top: -80px; /* Start hidden above the viewport */
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2000;
+    max-width: 450px;
+    width: 90%;
+    background: rgba(255, 51, 102, 0.15);
+    border: 1px solid rgba(255, 51, 102, 0.4);
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border-radius: 16px;
+    padding: 12px 24px;
+    box-shadow: 
+        0 10px 30px rgba(0, 0, 0, 0.5),
+        0 0 20px rgba(255, 51, 102, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transition: top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    pointer-events: none;
+}
+
+.reconnect-banner.show {
+    top: 20px; /* Slide down into view */
+}
+
+.reconnect-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    font-family: 'Space Grotesk', sans-serif;
+    letter-spacing: 0.5px;
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+}
+
+.reconnect-content span:last-child {
+    animation: textPulse 1.5s infinite alternate;
+}
+
+/* Spinner Animation */
+.reconnect-content .spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255, 255, 255, 0.1);
+    border-top: 3px solid var(--neon-red);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    box-shadow: 0 0 8px rgba(255, 51, 102, 0.4);
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@keyframes textPulse {
+    0% { opacity: 0.7; }
+    100% { opacity: 1; }
 }

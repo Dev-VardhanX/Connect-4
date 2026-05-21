@@ -2,13 +2,14 @@
 const socket = io();
 
 // STATE MANAGEMENT
-let myColor = null; // 'red', 'yellow', or null
+let myColor = null; // 'red', 'yellow', or null (spectator/not joined)
 let roomCode = "";
 let boardState = Array(6).fill(null).map(() => Array(7).fill(""));
 let currentPlayerColor = "red";
 let isGameOver = false;
-let clickLock = false; // Locks inputs during chip dropping animations
+let clickLock = false; // Locks board inputs during chip dropping animations
 let isMuted = false;
+let clickLockTimeout = null; // Safety recovery timeout to prevent permanent UI lockouts
 
 // DOM ELEMENT REFERENCES
 const lobbyScreen = document.getElementById("lobby-screen");
@@ -39,6 +40,9 @@ const gameStatusAlert = document.getElementById("gameStatusAlert");
 const board = document.getElementById("board");
 const colIndicators = document.getElementById("colIndicators");
 
+// Pre-cache column indicator elements to completely avoid DOM querying during mouse hover loops
+const indicatorArrows = Array.from(colIndicators.querySelectorAll(".indicator-arrow"));
+
 // Modals
 const gameOverModal = document.getElementById("gameOverModal");
 const modalTitle = document.getElementById("modalTitle");
@@ -48,210 +52,191 @@ const yellowRematchBadge = document.getElementById("yellowRematchBadge");
 const rematchBtn = document.getElementById("rematchBtn");
 const modalExitBtn = document.getElementById("modalExitBtn");
 
-// ================= AUDIO SYNTHESIZER (WEB AUDIO API) =================
-let audioCtx = null;
+// O(1) Board Cells Element Cache
+let cellElements = Array(6).fill(null).map(() => Array(7).fill(null));
 
-/**
- * Initializes the AudioContext lazily on user interaction
- */
-function initAudio() {
-  if (audioCtx) return;
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  } catch (e) {
-    console.warn("Web Audio API is not supported in this browser", e);
+// ================= CENTRAL SOUND MANAGER (WEB AUDIO API + MP3 CACHING) =================
+const SoundManager = {
+  ctx: null,
+  activeOscillators: new Set(),
+  audioCache: {}, // Caches HTML5 Audio objects to prevent duplicate creations and memory leaks
+  activeAudios: new Set(), // Tracks currently playing custom MP3 objects
+
+  /**
+   * Initializes the AudioContext lazily on user interaction
+   */
+  init() {
+    if (this.ctx) return;
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      console.warn("Web Audio API is not supported in this browser", e);
+    }
+  },
+
+  /**
+   * Resumes AudioContext if suspended (browser autoplay safety)
+   */
+  resume() {
+    this.init();
+    if (this.ctx && this.ctx.state === "suspended") {
+      this.ctx.resume();
+    }
+  },
+
+  /**
+   * Helper to retrieve or create cached HTML5 Audio elements
+   */
+  getAudio(type) {
+    const paths = {
+      start: "sounds/Game_Start.mp3",
+      win: "sounds/Game_Win.mp3",
+      lose: "sounds/Game_loser.mp3",
+      draw: "sounds/Game_Draw.mp3",
+      invalid: "sounds/Game_invalid.mp3"
+    };
+
+    if (!paths[type]) return null;
+
+    if (!this.audioCache[type]) {
+      const audio = new Audio(paths[type]);
+      audio.preload = "auto";
+      
+      // Auto-manage active playback records to avoid stacking and overlapping leaks
+      audio.addEventListener("play", () => {
+        this.activeAudios.add(audio);
+      });
+      audio.addEventListener("ended", () => {
+        this.activeAudios.delete(audio);
+      });
+      audio.addEventListener("pause", () => {
+        this.activeAudios.delete(audio);
+      });
+
+      this.audioCache[type] = audio;
+    }
+
+    return this.audioCache[type];
+  },
+
+  /**
+   * Plays a preloaded MP3 or falls back to Web Audio synthesized sound
+   * @param {string} type - The sound identifier
+   */
+  play(type) {
+    if (isMuted) return;
+    this.resume();
+
+    // Prevent multiplayer state-change sounds stacking up by stopping preceding ones
+    if (["start", "win", "lose", "draw", "invalid"].includes(type)) {
+      this.stopAllMP3s();
+    }
+
+    // Attempt to load and play cached custom MP3 sound effect
+    const audio = this.getAudio(type);
+    if (audio) {
+      audio.currentTime = 0; // Rewind to start
+      this.safePlay(audio);
+      return;
+    }
+
+    // Synthesize UI sound effect if no MP3 asset matches (Web Audio API)
+    if (!this.ctx) return;
+
+    // Throttle high-speed synthesizer node allocations
+    if (this.activeOscillators.size > 8) {
+      const oldestNode = this.activeOscillators.values().next().value;
+      try {
+        oldestNode.osc.stop();
+      } catch (e) {}
+      this.activeOscillators.delete(oldestNode);
+    }
+
+    if (type === "click") {
+      this.playTone(900, 300, 0.05, 0.12, "sine");
+    } else if (type === "drop") {
+      this.playTone(450, 140, 0.4, 0.2, "sine"); // Frequency sweep
+    } else if (type === "bounce") {
+      this.playTone(90, 50, 0.12, 0.35, "triangle"); // Landing thud
+    }
+  },
+
+  /**
+   * Safe Audio.play() wrapper with promise catch to gracefully bypass autoplay blocks
+   */
+  safePlay(audio) {
+    if (!audio) return;
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(error => {
+        console.warn("Audio playback was blocked or interrupted by the browser:", error);
+      });
+    }
+  },
+
+  /**
+   * Helper to construct oscillator paths and gain envelopes
+   */
+  playTone(startFreq, endFreq, duration, volume, waveType, delay = 0) {
+    const osc = this.ctx.createOscillator();
+    const gainNode = this.ctx.createGain();
+
+    osc.type = waveType;
+    const startTime = this.ctx.currentTime + delay;
+
+    osc.frequency.setValueAtTime(startFreq, startTime);
+    if (startFreq !== endFreq) {
+      osc.frequency.exponentialRampToValueAtTime(endFreq, startTime + duration);
+    }
+
+    gainNode.gain.setValueAtTime(volume, startTime);
+    gainNode.gain.linearRampToValueAtTime(0.01, startTime + duration);
+
+    osc.connect(gainNode);
+    gainNode.connect(this.ctx.destination);
+
+    const nodeRecord = { osc, gainNode };
+    this.activeOscillators.add(nodeRecord);
+
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+
+    // Clean reference once sound concludes
+    setTimeout(() => {
+      this.activeOscillators.delete(nodeRecord);
+    }, (delay + duration) * 1000 + 100);
+  },
+
+  /**
+   * Stop all active long-running MP3 audio playbacks
+   */
+  stopAllMP3s() {
+    this.activeAudios.forEach(audio => {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch (e) {}
+    });
+    this.activeAudios.clear();
+  },
+
+  /**
+   * Terminates all audio contexts, cached audios, and active oscillator nodes (e.g. on leaveRoom)
+   */
+  stopAll() {
+    this.stopAllMP3s();
+    this.activeOscillators.forEach(nodeRecord => {
+      try {
+        nodeRecord.osc.stop();
+      } catch (e) {}
+    });
+    this.activeOscillators.clear();
   }
-}
+};
 
+// ================= BOARD CREATION (DOM ONLY) =================
 /**
- * Ensures AudioContext is resumed (browsers auto-suspend audio)
- */
-function resumeAudioContext() {
-  initAudio();
-  if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume();
-  }
-}
-
-/**
- * Play standard ui click tone
- */
-function playClickTone() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const osc = audioCtx.createOscillator();
-  const gainNode = audioCtx.createGain();
-
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(900, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime + 0.05);
-
-  gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime);
-  gainNode.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
-
-  osc.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.05);
-}
-
-/**
- * Play game start / opponent join tone
- */
-function playStartTone() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
-  notes.forEach((freq, idx) => {
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.07);
-
-    gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime + idx * 0.07);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + idx * 0.07 + 0.2);
-
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime + idx * 0.07);
-    osc.stop(audioCtx.currentTime + idx * 0.07 + 0.20);
-  });
-}
-
-/**
- * Plays sliding chip drop pitch sweep
- */
-function playDropTone() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(450, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(140, audioCtx.currentTime + 0.4);
-
-  gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-  gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
-
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.4);
-}
-
-/**
- * Plays thud on landing bounce
- */
-function playBounceTone() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-
-  osc.type = "triangle";
-  osc.frequency.setValueAtTime(90, audioCtx.currentTime);
-  osc.frequency.linearRampToValueAtTime(50, audioCtx.currentTime + 0.12);
-
-  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-  gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
-
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.12);
-}
-
-/**
- * Plays victory arpeggio sound
- */
-function playWinArpeggio() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99, 1046.50]; // C4 to C6 major
-  notes.forEach((freq, idx) => {
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.1);
-
-    gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime + idx * 0.1);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + idx * 0.1 + 0.35);
-
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime + idx * 0.1);
-    osc.stop(audioCtx.currentTime + idx * 0.1 + 0.35);
-  });
-}
-
-/**
- * Plays defeat sound sequence
- */
-function playLoseSequence() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const notes = [220.00, 196.00, 155.56, 130.81]; // A3, G3, Eb3, C3
-  notes.forEach((freq, idx) => {
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.18);
-
-    gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime + idx * 0.18);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + idx * 0.18 + 0.35);
-
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime + idx * 0.18);
-    osc.stop(audioCtx.currentTime + idx * 0.18 + 0.35);
-  });
-}
-
-/**
- * Plays draw chime sound
- */
-function playDrawChime() {
-  if (isMuted) return;
-  resumeAudioContext();
-  if (!audioCtx) return;
-
-  const notes = [349.23, 349.23]; // F4, F4 flat
-  notes.forEach((freq, idx) => {
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.2);
-
-    gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime + idx * 0.2);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + idx * 0.2 + 0.3);
-
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime + idx * 0.2);
-    osc.stop(audioCtx.currentTime + idx * 0.2 + 0.3);
-  });
-}
-
-// ================= BOARD CREATION =================
-/**
- * Generates the board cell divs in DOM
+ * Generates the board cell divs in DOM and pre-caches cell element references
  */
 function initBoardDOM() {
   board.innerHTML = "";
@@ -261,36 +246,72 @@ function initBoardDOM() {
       cell.classList.add("cell");
       cell.dataset.row = r;
       cell.dataset.col = c;
-
-      // Click Action
-      cell.addEventListener("click", () => {
-        handleColumnSelection(c);
-      });
-
-      // Hover Previews
-      cell.addEventListener("mouseenter", () => {
-        showPreview(c);
-      });
-
-      cell.addEventListener("mouseleave", () => {
-        clearPreview();
-      });
-
       board.appendChild(cell);
+      cellElements[r][c] = cell; // Cache reference for O(1) rendering
     }
   }
 }
 
-// ================= SYSTEM UI INTERACTIONS =================
+/**
+ * Draws already-placed chips on the board using cached element lookups
+ * Essential for reconnects, spectators, and synchronizing initial late joins.
+ */
+function renderBoardFromState() {
+  initBoardDOM();
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 7; c++) {
+      const color = boardState[r][c];
+      if (color) {
+        const cell = cellElements[r][c];
+        if (cell) {
+          const chip = document.createElement("div");
+          chip.className = `chip ${color}`;
+          cell.appendChild(chip);
+        }
+      }
+    }
+  }
+}
+
+// ================= EVENT DELEGATION BINDINGS =================
+/**
+ * Sets up board parent level listeners once at startup
+ */
+function bindBoardEvents() {
+  // Click Handler
+  board.addEventListener("click", (e) => {
+    if (isGameOver || clickLock) return;
+    const cell = e.target.closest(".cell");
+    if (!cell) return;
+    const col = parseInt(cell.dataset.col);
+    handleColumnSelection(col);
+  });
+
+  // Mouse Over preview update
+  board.addEventListener("mouseover", (e) => {
+    if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
+    const cell = e.target.closest(".cell");
+    if (!cell) return;
+    const col = parseInt(cell.dataset.col);
+    showPreview(col);
+  });
+
+  // Mouse Leave board boundary
+  board.addEventListener("mouseleave", () => {
+    clearPreview();
+  });
+}
+
+// ================= SYSTEM UI STATE TRANSITIONS =================
 
 /**
  * Show temporary toast message
  */
 function showToast(message) {
   toast.textContent = message;
-  toast.classList.add("show");
+  toast.className = "toast show";
   setTimeout(() => {
-    toast.classList.remove("show");
+    toast.className = "toast";
   }, 2000);
 }
 
@@ -325,7 +346,7 @@ function updateDashboardUI() {
   }
 
   // Set status alert bar
-  gameStatusAlert.classList.remove("pulse-red", "pulse-yellow", "pulse-blue");
+  gameStatusAlert.className = "status-badge";
 
   if (!myColor) {
     gameStatusAlert.textContent = "Spectating Match";
@@ -340,13 +361,16 @@ function updateDashboardUI() {
 }
 
 /**
- * Shows interactive column hover preview and arrows
+ * Shows interactive column hover preview and arrows using O(1) cached arrays
  */
 function showPreview(col) {
   if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
 
-  // Highlight column selector arrow above
-  const arrow = colIndicators.querySelector(`[data-col="${col}"]`);
+  // Clear previous previews first to avoid multiple previews
+  clearPreview();
+
+  // Highlight column selector arrow above using pre-cached array element
+  const arrow = indicatorArrows[col];
   if (arrow) {
     arrow.classList.add(`active-${myColor}`);
   }
@@ -361,7 +385,7 @@ function showPreview(col) {
   }
 
   if (vacantRow !== -1) {
-    const targetCell = board.querySelector(`[data-row="${vacantRow}"][data-col="${col}"]`);
+    const targetCell = cellElements[vacantRow][col];
     if (targetCell) {
       targetCell.classList.add(`preview-${myColor}`);
     }
@@ -369,42 +393,47 @@ function showPreview(col) {
 }
 
 /**
- * Clears any hover preview outlines and arrows
+ * Clears any hover preview outlines and arrows using O(1) cached arrays
  */
 function clearPreview() {
-  // Clear indicator arrows
-  colIndicators.querySelectorAll(".indicator-arrow").forEach(arrow => {
-    arrow.classList.remove("active-red", "active-yellow");
+  // Clear indicator arrows using O(1) pre-cached array
+  indicatorArrows.forEach(arrow => {
+    arrow.className = "indicator-arrow";
   });
 
-  // Clear cell outlines
-  board.querySelectorAll(".cell").forEach(cell => {
-    cell.classList.remove("preview-red", "preview-yellow");
-  });
+  // Clear cell outlines using O(1) pre-cached array
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 7; c++) {
+      const cell = cellElements[r][c];
+      if (cell) {
+        cell.classList.remove("preview-red", "preview-yellow");
+      }
+    }
+  }
 }
 
 // ================= GAMEPLAY ACTIONS =================
 
 /**
- * Triggered on cell click - Emits move to server
+ * Triggered on cell click - Emits move to server with safety release timeout
  */
 function handleColumnSelection(col) {
-  if (isGameOver || clickLock) return;
+  if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
 
-  if (!myColor) {
-    showToast("You are spectating!");
-    return;
-  }
-
-  if (currentPlayerColor !== myColor) {
-    showToast("It is not your turn!");
-    return;
-  }
-
-  playClickTone();
+  SoundManager.play("click");
   
-  // Anti-spam lock
+  // Set anti-spam lock (freed on move rejection, board update, or safety timeout)
   clickLock = true;
+
+  // Establish production-grade safety click release timeout (1.5 seconds)
+  // This guarantees input recovery even under extreme network latency or packet loss.
+  if (clickLockTimeout) clearTimeout(clickLockTimeout);
+  clickLockTimeout = setTimeout(() => {
+    if (clickLock && !isGameOver) {
+      console.warn("Safety clickLock release triggered.");
+      clickLock = false;
+    }
+  }, 1500);
 
   socket.emit("makeMove", {
     roomCode: roomCode,
@@ -412,17 +441,83 @@ function handleColumnSelection(col) {
   });
 }
 
-// ================= WEBSOCKET HANDLERS =================
+/**
+ * Resets local states completely and returns user back to lobby (SPA style)
+ */
+function leaveRoom() {
+  if (roomCode) {
+    socket.emit("leaveRoom", roomCode);
+  }
 
+  // Reset local state variables
+  myColor = null;
+  roomCode = "";
+  boardState = Array(6).fill(null).map(() => Array(7).fill(""));
+  currentPlayerColor = "red";
+  isGameOver = false;
+  clickLock = false;
+  
+  if (clickLockTimeout) {
+    clearTimeout(clickLockTimeout);
+    clickLockTimeout = null;
+  }
+
+  // Terminate any active or queued audio/synthetic playbacks
+  SoundManager.stopAll();
+
+  // Reset layout labels and fields
+  roomCodeDisplay.textContent = "-----";
+  roomInput.value = "";
+
+  playerRedName.textContent = "Connecting...";
+  playerYellowName.textContent = "Waiting...";
+  playerRedCard.className = "player-card card-red";
+  playerYellowCard.className = "player-card card-yellow";
+
+  gameStatusAlert.textContent = "Waiting for players to connect...";
+  gameStatusAlert.className = "status-badge pulse-red";
+
+  // Reset rematch badges in modal
+  redRematchBadge.classList.remove("active");
+  redRematchBadge.querySelector(".status-check").textContent = "✖";
+  yellowRematchBadge.classList.remove("active");
+  yellowRematchBadge.querySelector(".status-check").textContent = "✖";
+  
+  rematchBtn.removeAttribute("disabled");
+  rematchBtn.textContent = "Request Rematch";
+
+  // Rebuild clear board
+  initBoardDOM();
+  clearPreview();
+
+  // Close modals
+  gameOverModal.classList.remove("active");
+
+  // Show lobby screen
+  showScreen("lobby");
+  showToast("Left room and returned to Lobby");
+}
+
+// ================= WEBSOCKET EVENT HANDLERS =================
+
+// Socket Connect status events
 // Socket Connect status events
 socket.on("connect", () => {
   connectionStatus.className = "connection-badge status-connected";
   connectionStatus.querySelector(".status-label").textContent = "Connected to Server";
+  const banner = document.getElementById("reconnectBanner");
+  if (banner) {
+    banner.classList.remove("show");
+  }
 });
 
 socket.on("disconnect", () => {
   connectionStatus.className = "connection-badge status-disconnected";
   connectionStatus.querySelector(".status-label").textContent = "Server Offline. Reconnecting...";
+  const banner = document.getElementById("reconnectBanner");
+  if (banner) {
+    banner.classList.add("show");
+  }
   showToast("Connection to server lost.");
   showScreen("lobby");
 });
@@ -441,16 +536,23 @@ socket.on("playerAssigned", (data) => {
   roomCode = data.roomCode;
   roomCodeDisplay.textContent = roomCode;
 
-  // Adjust display text based on roles
+  // Adjust display text based on roles (Host, Guest, or Spectator)
   if (myColor === "red") {
     playerRedName.textContent = "You (Host)";
     playerYellowName.textContent = "Waiting for guest...";
     playerYellowCard.classList.add("offline");
-  } else {
+    playerRedCard.classList.remove("offline");
+  } else if (myColor === "yellow") {
     playerRedName.textContent = "Opponent (Host)";
     playerYellowName.textContent = "You (Guest)";
     playerYellowCard.classList.remove("offline");
     playerRedCard.classList.remove("offline");
+  } else {
+    // Spectator Mode
+    playerRedName.textContent = "Player 1 (Host)";
+    playerYellowName.textContent = "Player 2 (Guest)";
+    playerRedCard.classList.remove("offline");
+    playerYellowCard.classList.remove("offline");
   }
 
   // Clear old chips
@@ -477,12 +579,18 @@ socket.on("gameStart", (gameState) => {
   if (guest) {
     if (myColor === "red") {
       playerYellowName.textContent = "Player 2";
-    } else {
+    } else if (myColor === "yellow") {
       playerRedName.textContent = "Player 1";
+    } else {
+      playerRedName.textContent = "Player 1 (Host)";
+      playerYellowName.textContent = "Player 2 (Guest)";
     }
   }
 
-  playStartTone();
+  // Synchronize board rendering with server state (critical for spectators/late reconnects!)
+  renderBoardFromState();
+
+  SoundManager.play("start");
   updateDashboardUI();
 });
 
@@ -493,8 +601,13 @@ socket.on("boardUpdated", (data) => {
   boardState = serverBoard;
   currentPlayerColor = nextTurn;
 
-  // Find target cell DOM element
-  const cell = board.querySelector(`[data-row="${row}"][data-col="${col}"]`);
+  if (clickLockTimeout) {
+    clearTimeout(clickLockTimeout);
+    clickLockTimeout = null;
+  }
+
+  // Find target cell DOM element using high speed cached cell lookups
+  const cell = cellElements[row][col];
   if (cell) {
     // Generate chip element
     const chip = document.createElement("div");
@@ -505,18 +618,21 @@ socket.on("boardUpdated", (data) => {
     clickLock = true;
 
     // Drop Sound effects
-    playDropTone();
+    SoundManager.play("drop");
 
     // Synchronize Bounce Sound effect with landing keyframes (~75% duration)
     const animDurations = [350, 400, 450, 500, 550, 600];
     const duration = animDurations[row];
 
     setTimeout(() => {
-      playBounceTone();
+      SoundManager.play("bounce");
     }, duration * 0.75);
 
     // Unlock board inputs after dropping concludes
     setTimeout(() => {
+      // Remove falling animation class to optimize rendering and GPU composition layers
+      chip.classList.remove(`drop-r${row}`);
+
       if (status === "playing") {
         clickLock = false;
         clearPreview(); // clear old hover layouts
@@ -532,10 +648,10 @@ socket.on("boardUpdated", (data) => {
 
     // Small delay to allow dropping chip to bounce and settle
     setTimeout(() => {
-      // Highlight winning combination lines
+      // Highlight winning combination lines using pre-cached elements
       if (winningCells && winningCells.length > 0) {
         winningCells.forEach(coord => {
-          const winCell = board.querySelector(`[data-row="${coord.r}"][data-col="${coord.c}"]`);
+          const winCell = cellElements[coord.r][coord.c];
           if (winCell) {
             winCell.classList.add("winning-cell");
             winCell.style.color = color === "red" ? "var(--neon-red)" : "var(--neon-yellow)";
@@ -549,17 +665,23 @@ socket.on("boardUpdated", (data) => {
         modalTitle.textContent = "DRAW GAME";
         modalTitle.classList.add("draw");
         modalDescription.textContent = "No empty slots left! The board is completely full.";
-        playDrawChime();
+        SoundManager.play("draw");
       } else if (winner === myColor) {
         modalTitle.textContent = "VICTORY!";
         modalTitle.classList.add("win");
         modalDescription.textContent = "Congratulations! You aligned four in a row and won the arena.";
-        playWinArpeggio();
+        SoundManager.play("win");
+      } else if (!myColor) {
+        // Spectator view of the game concluding
+        modalTitle.textContent = "MATCH CONCLUDED";
+        modalTitle.classList.add("draw");
+        modalDescription.textContent = `Player ${winner.toUpperCase()} aligned four in a row and secured the win.`;
+        SoundManager.play("draw");
       } else {
         modalTitle.textContent = "DEFEAT...";
         modalTitle.classList.add("lose");
         modalDescription.textContent = "The opponent aligned four in a row. Better luck next game!";
-        playLoseSequence();
+        SoundManager.play("lose");
       }
 
       // Reset modal checkboxes
@@ -577,6 +699,16 @@ socket.on("boardUpdated", (data) => {
   }
 
   updateDashboardUI();
+});
+
+// MOVE REJECTED BY SERVER
+socket.on("moveRejected", () => {
+  if (clickLockTimeout) {
+    clearTimeout(clickLockTimeout);
+    clickLockTimeout = null;
+  }
+  clickLock = false;
+  SoundManager.play("invalid"); // Play the custom invalid/column-full sound effect!
 });
 
 // REMATCH SYSTEM SYNC STATE
@@ -606,55 +738,74 @@ socket.on("gameRestarted", (gameState) => {
   isGameOver = false;
   clickLock = false;
 
+  if (clickLockTimeout) {
+    clearTimeout(clickLockTimeout);
+    clickLockTimeout = null;
+  }
+
   // Clear modal and close
   gameOverModal.classList.remove("active");
 
-  // Re-generate fresh Board divs
+  // Re-generate fresh Board divs and clear O(1) caches
   initBoardDOM();
   
-  playStartTone();
+  SoundManager.play("start");
   updateDashboardUI();
 });
 
 // OPPONENT LEFT GAME
 socket.on("opponentLeft", (data) => {
-  showToast("Opponent left the match.");
+  showToast("A player left the match.");
   
-  // Revert back to host waiting if promoted
-  if (myColor === "red") {
-    playerRedName.textContent = "You (Host)";
-    playerYellowName.textContent = "Waiting for Guest...";
-    playerYellowCard.classList.add("offline");
-  }
-
   isGameOver = false;
   clickLock = false;
+  if (clickLockTimeout) {
+    clearTimeout(clickLockTimeout);
+    clickLockTimeout = null;
+  }
   boardState = Array(6).fill(null).map(() => Array(7).fill(""));
 
   // Reset board visuals
   initBoardDOM();
+  clearPreview();
   
   // Close modal if open
   gameOverModal.classList.remove("active");
 
   gameStatusAlert.textContent = data.message;
   gameStatusAlert.className = "status-badge pulse-red";
-  playLoseSequence();
+  SoundManager.play("lose");
+
+  // Dynamically update scoreboards and names for spectators and active players alike
+  if (myColor === "red") {
+    playerRedName.textContent = "You (Host)";
+    playerYellowName.textContent = "Waiting for Guest...";
+    playerYellowCard.classList.add("offline");
+    playerRedCard.classList.remove("offline");
+  } else if (myColor === "yellow") {
+    playerRedName.textContent = "Opponent (Host)";
+    playerYellowName.textContent = "You (Guest)";
+  } else {
+    // Spectating clients
+    playerRedName.textContent = "Player 1 (Host)";
+    playerYellowName.textContent = "Waiting for Guest...";
+    playerYellowCard.classList.add("offline");
+    playerRedCard.classList.remove("offline");
+  }
 });
 
 // ================= USER INTERACTION TRIGGERS =================
 
 // Host Room btn click
 createRoomBtn.addEventListener("click", () => {
-  playClickTone();
-  // Generate random 5-character string room code
+  SoundManager.play("click");
   const code = Math.random().toString(36).substring(2, 7).toUpperCase();
   socket.emit("createRoom", code);
 });
 
 // Join Room btn click
 joinRoomBtn.addEventListener("click", () => {
-  playClickTone();
+  SoundManager.play("click");
   const code = roomInput.value.trim().toUpperCase();
   if (code.length === 0) {
     showToast("Please enter a room code!");
@@ -663,27 +814,60 @@ joinRoomBtn.addEventListener("click", () => {
   socket.emit("joinRoom", code);
 });
 
-// Copy code click
+// Copy code click (with standard textarea fallback for secure contexts)
 copyCodeBtn.addEventListener("click", () => {
-  playClickTone();
+  SoundManager.play("click");
   const code = roomCodeDisplay.textContent;
   if (code && code !== "-----") {
-    navigator.clipboard.writeText(code)
-      .then(() => {
-        showToast("Room code copied to clipboard!");
-      })
-      .catch(err => {
-        console.error("Copy failed", err);
-      });
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(code)
+        .then(() => {
+          showToast("Room code copied to clipboard!");
+        })
+        .catch(err => {
+          console.error("Clipboard copy failed: ", err);
+          fallbackCopyText(code);
+        });
+    } else {
+      fallbackCopyText(code);
+    }
   }
 });
 
+function fallbackCopyText(text) {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  
+  // Prevent screen scroll/jump on focus
+  textArea.style.position = "fixed";
+  textArea.style.top = "0";
+  textArea.style.left = "0";
+  textArea.style.opacity = "0";
+  
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  
+  try {
+    const successful = document.execCommand("copy");
+    if (successful) {
+      showToast("Room code copied to clipboard!");
+    } else {
+      showToast("Failed to copy code.");
+    }
+  } catch (err) {
+    console.error("Fallback copy failed: ", err);
+    showToast("Copy not supported on this browser.");
+  }
+  
+  document.body.removeChild(textArea);
+}
+
 // Exit room/lobby btn
 exitLobbyBtn.addEventListener("click", () => {
-  playClickTone();
+  SoundManager.play("click");
   if (confirm("Are you sure you want to leave this game?")) {
-    socket.emit("disconnect"); // Trigger server side teardown
-    window.location.reload(); // Refresh client session
+    leaveRoom();
   }
 });
 
@@ -691,12 +875,16 @@ exitLobbyBtn.addEventListener("click", () => {
 muteBtn.addEventListener("click", () => {
   isMuted = !isMuted;
   muteIcon.textContent = isMuted ? "🔇" : "🔊";
-  playClickTone();
+  if (isMuted) {
+    SoundManager.stopAll();
+  } else {
+    SoundManager.play("click");
+  }
 });
 
 // Request Rematch button in Modal
 rematchBtn.addEventListener("click", () => {
-  playClickTone();
+  SoundManager.play("click");
   if (roomCode) {
     socket.emit("requestRematch", roomCode);
   }
@@ -704,12 +892,19 @@ rematchBtn.addEventListener("click", () => {
 
 // Modal exit btn
 modalExitBtn.addEventListener("click", () => {
-  playClickTone();
-  socket.emit("disconnect");
-  window.location.reload();
+  SoundManager.play("click");
+  leaveRoom();
 });
 
-// Enable audio context initialization on first click anywhere
+// ================= STARTUP INITIALIZATION =================
+
+// Initialize Board DOM divs
+initBoardDOM();
+
+// Bind Events using parent delegation
+bindBoardEvents();
+
+// Enable audio context initialization on first click gesture anywhere on screen
 document.body.addEventListener("click", () => {
-  initAudio();
+  SoundManager.resume();
 }, { once: true });
