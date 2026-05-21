@@ -128,12 +128,12 @@ function handlePlayerLeave(socket, roomCode) {
   room.players.splice(playerIndex, 1);
   room.rematchRequests = []; // Cancel any pending rematch requests
   
-  console.log(`Player ${socket.id} (${leavingPlayer.color}) left room ${roomCode}`);
+  console.log("Player left room");
 
   if (room.players.length === 0) {
     // If no players are left in the room, delete it
     delete rooms[roomCode];
-    console.log(`Room ${roomCode} deleted (empty)`);
+    console.log("Room deleted");
   } else {
     // One player remains, reset board state and revert to waiting mode
     room.status = "waiting";
@@ -149,11 +149,12 @@ function handlePlayerLeave(socket, roomCode) {
     // Inform the remaining client of their identity update
     io.to(remainingPlayer.id).emit("playerAssigned", { color: "red", roomCode });
     
-    // Broadcast the departure and waiting status to all remaining sockets in the room
-    io.to(roomCode).emit("opponentLeft", {
+    // Notify remaining opponent using socket.to(roomCode).emit
+    socket.to(roomCode).emit("opponentLeft", {
       message: `Opponent left the match. You are now Host (Red). Waiting for Player 2...`,
       players: room.players
     });
+    console.log("Opponent notified");
   }
 }
 
@@ -354,7 +355,11 @@ io.on("connection", (socket) => {
   });
 
   // EXPLICIT LEAVE ROOM EVENT
-  socket.on("leaveRoom", (roomCode) => {
+  socket.on("leaveRoom", (data) => {
+    let roomCode = data;
+    if (data && typeof data === 'object') {
+      roomCode = data.roomCode;
+    }
     if (roomCode) {
       handlePlayerLeave(socket, roomCode);
     }

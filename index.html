@@ -34,6 +34,7 @@
         <!-- ================= LOBBY SCREEN ================= -->
         <section id="lobby-screen" class="glass-panel active">
             <header class="lobby-header">
+                <button id="lobbyHelpBtn" class="btn btn-icon btn-help" title="How to Play">?</button>
                 <h1 class="logo-text">CONNECT <span class="neon-red">4</span></h1>
                 <p class="subtitle">Realtime Neon Multiplayer Arena</p>
             </header>
@@ -99,6 +100,7 @@
                 <button id="muteBtn" class="btn btn-icon btn-mute" title="Toggle audio">
                     <span id="muteIcon">🔊</span>
                 </button>
+                <button id="gameHelpBtn" class="btn btn-icon btn-help" title="How to Play">?</button>
             </header>
 
             <!-- Active Scoreboard & Identity Dash -->
@@ -178,6 +180,55 @@
                 </button>
                 <button id="modalExitBtn" class="btn btn-secondary">
                     Back to Lobby
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= TUTORIAL / HOW TO PLAY MODAL ================= -->
+    <div id="tutorialModal" class="modal-overlay">
+        <div class="modal-content glass-panel tutorial-panel">
+            <div class="modal-header">
+                <h2 class="modal-title win">How to Play</h2>
+                <p class="tutorial-subtitle">Master the Neon Connect 4 Arena</p>
+            </div>
+            <div class="modal-body tutorial-body">
+                <div class="tutorial-step">
+                    <span class="step-icon">🎯</span>
+                    <div class="step-text">
+                        <h4>Take Turns</h4>
+                        <p>Players take turns dropping colored chips (🔴 Red vs 🟡 Yellow) into the grid.</p>
+                    </div>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-icon">🧠</span>
+                    <div class="step-text">
+                        <h4>Connect Four</h4>
+                        <p>First player to connect 4 of their chips horizontally, vertically, or diagonally wins!</p>
+                    </div>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-icon">⏳</span>
+                    <div class="step-text">
+                        <h4>Wait for Turn</h4>
+                        <p>You can only drop a chip during your turn. Anti-spam controls protect active turns.</p>
+                    </div>
+                </div>
+                <div class="tutorial-step">
+                    <span class="step-icon">🤝</span>
+                    <div class="step-text">
+                        <h4>Draw Game</h4>
+                        <p>If the entire 6x7 board fills up completely with no winner, the game ends in a draw.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="tutorial-footer">
+                <label class="dont-show-again">
+                    <input type="checkbox" id="dontShowTutorial">
+                    <span>Don't show this again</span>
+                </label>
+                <button id="closeTutorialBtn" class="btn btn-primary btn-glow">
+                    Start Playing
                 </button>
             </div>
         </div>

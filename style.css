@@ -1048,3 +1048,150 @@ input:focus {
     0% { opacity: 0.7; }
     100% { opacity: 1; }
 }
+
+/* ================= TUTORIAL MODAL CUSTOM STYLING ================= */
+.tutorial-panel {
+    max-width: 480px !important;
+}
+
+.tutorial-subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 4px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.tutorial-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    text-align: left;
+    margin: 20px 0;
+}
+
+.tutorial-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 15px;
+    padding: 12px 16px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    transition: background var(--transition-speed);
+}
+
+.tutorial-step:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.step-icon {
+    font-size: 1.8rem;
+    line-height: 1;
+    filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.2));
+}
+
+.step-text h4 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 3px;
+    color: var(--text-primary);
+    font-family: 'Space Grotesk', sans-serif;
+}
+
+.step-text p {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    margin-bottom: 0 !important;
+}
+
+.tutorial-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-top: 10px;
+}
+
+.dont-show-again {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    user-select: none;
+}
+
+.dont-show-again input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    position: relative;
+    outline: none;
+    transition: border-color var(--transition-speed), background-color var(--transition-speed);
+}
+
+.dont-show-again input[type="checkbox"]:checked {
+    background-color: var(--neon-blue);
+    border-color: var(--neon-blue);
+}
+
+.dont-show-again input[type="checkbox"]:checked::after {
+    content: "✓";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: black;
+    font-size: 0.75rem;
+    font-weight: bold;
+}
+
+.dont-show-again span {
+    transition: color var(--transition-speed);
+}
+
+.dont-show-again:hover span {
+    color: var(--text-primary);
+}
+
+/* Small Help Button Layout */
+.btn-help {
+    width: 38px;
+    height: 38px;
+    border-radius: 50% !important;
+    padding: 0 !important;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 1.15rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--neon-blue);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.1);
+    transition: all var(--transition-speed);
+}
+
+.btn-help:hover {
+    background: rgba(0, 240, 255, 0.15);
+    border-color: var(--neon-blue);
+    color: white;
+    box-shadow: 0 0 15px var(--neon-blue-glow);
+}
+
+/* Position "?" button in Lobby panel top-right */
+#lobby-screen {
+    position: relative;
+}
+
+.lobby-header .btn-help {
+    position: absolute;
+    top: 25px;
+    right: 25px;
+}

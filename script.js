@@ -10,6 +10,8 @@ let isGameOver = false;
 let clickLock = false; // Locks board inputs during chip dropping animations
 let isMuted = false;
 let clickLockTimeout = null; // Safety recovery timeout to prevent permanent UI lockouts
+let isTutorialOpen = false;
+let socketEventBuffer = [];
 
 // DOM ELEMENT REFERENCES
 const lobbyScreen = document.getElementById("lobby-screen");
@@ -51,6 +53,13 @@ const redRematchBadge = document.getElementById("redRematchBadge");
 const yellowRematchBadge = document.getElementById("yellowRematchBadge");
 const rematchBtn = document.getElementById("rematchBtn");
 const modalExitBtn = document.getElementById("modalExitBtn");
+
+// Tutorial Modal & Help Controls
+const tutorialModal = document.getElementById("tutorialModal");
+const dontShowTutorial = document.getElementById("dontShowTutorial");
+const closeTutorialBtn = document.getElementById("closeTutorialBtn");
+const lobbyHelpBtn = document.getElementById("lobbyHelpBtn");
+const gameHelpBtn = document.getElementById("gameHelpBtn");
 
 // O(1) Board Cells Element Cache
 let cellElements = Array(6).fill(null).map(() => Array(7).fill(null));
@@ -280,7 +289,7 @@ function renderBoardFromState() {
 function bindBoardEvents() {
   // Click Handler
   board.addEventListener("click", (e) => {
-    if (isGameOver || clickLock) return;
+    if (isTutorialOpen || isGameOver || clickLock) return;
     const cell = e.target.closest(".cell");
     if (!cell) return;
     const col = parseInt(cell.dataset.col);
@@ -289,7 +298,7 @@ function bindBoardEvents() {
 
   // Mouse Over preview update
   board.addEventListener("mouseover", (e) => {
-    if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
+    if (isTutorialOpen || isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
     const cell = e.target.closest(".cell");
     if (!cell) return;
     const col = parseInt(cell.dataset.col);
@@ -364,7 +373,7 @@ function updateDashboardUI() {
  * Shows interactive column hover preview and arrows using O(1) cached arrays
  */
 function showPreview(col) {
-  if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
+  if (isTutorialOpen || isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
 
   // Clear previous previews first to avoid multiple previews
   clearPreview();
@@ -418,7 +427,7 @@ function clearPreview() {
  * Triggered on cell click - Emits move to server with safety release timeout
  */
 function handleColumnSelection(col) {
-  if (isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
+  if (isTutorialOpen || isGameOver || clickLock || !myColor || currentPlayerColor !== myColor) return;
 
   SoundManager.play("click");
   
@@ -446,7 +455,8 @@ function handleColumnSelection(col) {
  */
 function leaveRoom() {
   if (roomCode) {
-    socket.emit("leaveRoom", roomCode);
+    socket.emit("leaveRoom", { roomCode });
+    console.log("Player left room");
   }
 
   // Reset local state variables
@@ -495,10 +505,22 @@ function leaveRoom() {
 
   // Show lobby screen
   showScreen("lobby");
+  console.log("Returned to lobby");
   showToast("Left room and returned to Lobby");
 }
 
 // ================= WEBSOCKET EVENT HANDLERS =================
+
+// Register a socket event handler, buffering events if the tutorial is open
+function registerSocketEvent(event, handler) {
+  socket.on(event, (...args) => {
+    if (isTutorialOpen) {
+      socketEventBuffer.push({ event, args, handler });
+    } else {
+      handler(...args);
+    }
+  });
+}
 
 // Socket Connect status events
 // Socket Connect status events
@@ -522,7 +544,7 @@ socket.on("disconnect", () => {
   showScreen("lobby");
 });
 
-socket.on("status", (message) => {
+registerSocketEvent("status", (message) => {
   if (gameScreen.classList.contains("active")) {
     gameStatusAlert.textContent = message;
   } else {
@@ -531,7 +553,7 @@ socket.on("status", (message) => {
 });
 
 // CLIENT ASSIGNED IDENTITY
-socket.on("playerAssigned", (data) => {
+registerSocketEvent("playerAssigned", (data) => {
   myColor = data.color;
   roomCode = data.roomCode;
   roomCodeDisplay.textContent = roomCode;
@@ -565,7 +587,7 @@ socket.on("playerAssigned", (data) => {
 });
 
 // GAME START
-socket.on("gameStart", (gameState) => {
+registerSocketEvent("gameStart", (gameState) => {
   boardState = gameState.board;
   currentPlayerColor = gameState.currentPlayerColor;
   isGameOver = false;
@@ -595,7 +617,7 @@ socket.on("gameStart", (gameState) => {
 });
 
 // AUTHORITATIVE MOVE COMPLETED
-socket.on("boardUpdated", (data) => {
+registerSocketEvent("boardUpdated", (data) => {
   const { row, col, color, board: serverBoard, currentPlayerColor: nextTurn, status, winner, winningCells } = data;
 
   boardState = serverBoard;
@@ -702,7 +724,7 @@ socket.on("boardUpdated", (data) => {
 });
 
 // MOVE REJECTED BY SERVER
-socket.on("moveRejected", () => {
+registerSocketEvent("moveRejected", () => {
   if (clickLockTimeout) {
     clearTimeout(clickLockTimeout);
     clickLockTimeout = null;
@@ -712,7 +734,7 @@ socket.on("moveRejected", () => {
 });
 
 // REMATCH SYSTEM SYNC STATE
-socket.on("rematchState", (data) => {
+registerSocketEvent("rematchState", (data) => {
   const { requestedColors } = data;
 
   if (requestedColors.includes("red")) {
@@ -732,7 +754,7 @@ socket.on("rematchState", (data) => {
 });
 
 // GAME RESTARTED BY AGREEMENT
-socket.on("gameRestarted", (gameState) => {
+registerSocketEvent("gameRestarted", (gameState) => {
   boardState = gameState.board;
   currentPlayerColor = gameState.currentPlayerColor;
   isGameOver = false;
@@ -754,8 +776,10 @@ socket.on("gameRestarted", (gameState) => {
 });
 
 // OPPONENT LEFT GAME
-socket.on("opponentLeft", (data) => {
-  showToast("A player left the match.");
+registerSocketEvent("opponentLeft", (data) => {
+  const msg = (data && data.message) ? data.message : "Opponent left the match.";
+  showToast(msg);
+  console.log("Opponent notified");
   
   isGameOver = false;
   clickLock = false;
@@ -772,7 +796,7 @@ socket.on("opponentLeft", (data) => {
   // Close modal if open
   gameOverModal.classList.remove("active");
 
-  gameStatusAlert.textContent = data.message;
+  gameStatusAlert.textContent = msg;
   gameStatusAlert.className = "status-badge pulse-red";
   SoundManager.play("lose");
 
@@ -896,6 +920,65 @@ modalExitBtn.addEventListener("click", () => {
   leaveRoom();
 });
 
+// ================= TUTORIAL / HOW TO PLAY LOGIC =================
+
+/**
+ * Opens the tutorial modal and sets state to ignore game clicks/sockets
+ */
+function openTutorial() {
+  isTutorialOpen = true;
+  if (tutorialModal) {
+    tutorialModal.classList.add("active");
+  }
+}
+
+/**
+ * Closes the tutorial modal, updates localStorage if requested, and processes any buffered socket events
+ */
+function closeTutorial() {
+  isTutorialOpen = false;
+  if (tutorialModal) {
+    tutorialModal.classList.remove("active");
+  }
+
+  // Store preference in localStorage
+  if (dontShowTutorial && dontShowTutorial.checked) {
+    localStorage.setItem("dontShowTutorial", "true");
+  }
+
+  // Track that it has been shown in this browser session
+  sessionStorage.setItem("tutorialShown", "true");
+
+  // Replay buffered events
+  const buffer = [...socketEventBuffer];
+  socketEventBuffer = [];
+  buffer.forEach(item => {
+    item.handler(...item.args);
+  });
+}
+
+// Bind tutorial event listeners
+if (closeTutorialBtn) {
+  closeTutorialBtn.addEventListener("click", () => {
+    SoundManager.play("click");
+    closeTutorial();
+  });
+}
+
+if (lobbyHelpBtn) {
+  lobbyHelpBtn.addEventListener("click", () => {
+    SoundManager.play("click");
+    openTutorial();
+  });
+}
+
+if (gameHelpBtn) {
+  gameHelpBtn.addEventListener("click", () => {
+    SoundManager.play("click");
+    openTutorial();
+  });
+}
+
 // ================= STARTUP INITIALIZATION =================
 
 // Initialize Board DOM divs
@@ -908,3 +991,13 @@ bindBoardEvents();
 document.body.addEventListener("click", () => {
   SoundManager.resume();
 }, { once: true });
+
+// Check localStorage & sessionStorage for tutorial visibility
+window.addEventListener("DOMContentLoaded", () => {
+  const dontShow = localStorage.getItem("dontShowTutorial") === "true";
+  const shownThisSession = sessionStorage.getItem("tutorialShown") === "true";
+
+  if (!dontShow && !shownThisSession) {
+    openTutorial();
+  }
+});
